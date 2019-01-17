@@ -19,6 +19,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
+import io.github.sac.codec.SocketClusterCodec;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -41,6 +43,7 @@ public class Socket extends Emitter {
     private ConcurrentHashMap<String, Channel> channels;
     private WebSocketAdapter adapter;
     private Map<String, String> headers;
+    private SocketClusterCodec codec;
 
     public Socket(String URL) {
         this.URL = URL;
@@ -51,6 +54,19 @@ public class Socket extends Emitter {
         adapter = getAdapter();
         headers = new HashMap<>();
         putDefaultHeaders();
+    }
+
+    public Socket setCodec(SocketClusterCodec codec) {
+        this.codec = codec;
+        return this;
+    }
+
+    private void sendData(WebSocket websocket, Object data) {
+        if (this.codec == null) {
+            websocket.sendText(data.toString());
+        } else {
+            websocket.sendBinary(this.codec.encode(data));
+        }
     }
 
     private void putDefaultHeaders() {
@@ -106,7 +122,7 @@ public class Socket extends Emitter {
         AuthToken = token;
     }
 
-    public WebSocketAdapter getAdapter() {
+    public WebSocketAdapter getAdapter(final Socket socket) {
         return new WebSocketAdapter() {
 
             @Override
@@ -127,7 +143,7 @@ public class Socket extends Emitter {
                 object.put("authToken", AuthToken);
                 handshakeObject.put("data", object);
                 handshakeObject.put("cid", counter.getAndIncrement());
-                websocket.sendText(handshakeObject.toString());
+                socket.sendData(websocket, handshakeObject.toString());
 
                 listener.onConnected(Socket.this, headers);
 
@@ -156,10 +172,16 @@ public class Socket extends Emitter {
                     /**
                      *  PING-PONG logic goes here
                      */
-                    websocket.sendText("#2");
+                    socket.sendData(websocket, "#2");
                 } else {
-
-                    JSONObject object = new JSONObject(frame.getPayloadText());
+                    if (Socket.this.codec == null) {
+                        payload = this.getTextPayload(frame.getPayloadText());
+                    } else {
+                        payload = Socket.this.codec.decode(frame.getPayload());
+                    }
+                    JSONObject object = new JSONObject(
+                            socket.codec == null ? frame.getPayloadText() : socket.codec.decode(frame.getPayload())
+                    );
 
                     /**
                      * Message retrieval mechanism goes here
@@ -247,7 +269,7 @@ public class Socket extends Emitter {
                 } catch (JSONException e) {
                     e.printStackTrace();
                 }
-                ws.sendText(eventObject.toString());
+                sendData(ws, eventObject.toString());
             }
         });
         return this;
@@ -267,7 +289,7 @@ public class Socket extends Emitter {
                 } catch (JSONException e) {
                     e.printStackTrace();
                 }
-                ws.sendText(eventObject.toString());
+                sendData(ws, eventObject.toString());
             }
         });
         return this;
@@ -287,7 +309,7 @@ public class Socket extends Emitter {
                 } catch (JSONException e) {
                     e.printStackTrace();
                 }
-                ws.sendText(subscribeObject.toString());
+                sendData(ws, subscribeObject.toString());
             }
         });
         return this;
@@ -312,7 +334,7 @@ public class Socket extends Emitter {
                 } catch (JSONException e) {
                     e.printStackTrace();
                 }
-                ws.sendText(subscribeObject.toString());
+                sendData(ws, subscribeObject.toString());
             }
         });
         return this;
@@ -329,7 +351,7 @@ public class Socket extends Emitter {
                 } catch (JSONException e) {
                     e.printStackTrace();
                 }
-                ws.sendText(subscribeObject.toString());
+                sendData(ws, subscribeObject.toString());
             }
         });
         return this;
@@ -348,7 +370,7 @@ public class Socket extends Emitter {
                 } catch (JSONException e) {
                     e.printStackTrace();
                 }
-                ws.sendText(subscribeObject.toString());
+                sendData(ws, subscribeObject.toString());
             }
         });
         return this;
@@ -368,7 +390,7 @@ public class Socket extends Emitter {
                 } catch (JSONException e) {
                     e.printStackTrace();
                 }
-                ws.sendText(publishObject.toString());
+                sendData(ws, publishObject.toString());
             }
         });
 
@@ -390,7 +412,7 @@ public class Socket extends Emitter {
                 } catch (JSONException e) {
                     e.printStackTrace();
                 }
-                ws.sendText(publishObject.toString());
+                sendData(ws, publishObject.toString());
             }
         });
 
@@ -410,7 +432,7 @@ public class Socket extends Emitter {
                         } catch (JSONException e) {
                             e.printStackTrace();
                         }
-                        ws.sendText(object.toString());
+                        sendData(ws, object.toString());
                     }
                 });
             }
