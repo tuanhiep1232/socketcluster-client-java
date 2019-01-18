@@ -4,6 +4,8 @@ package io.github.sac;
  * Created by sachin on 13/11/16.
  */
 
+import com.fasterxml.jackson.databind.JsonNode;
+
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -56,8 +58,7 @@ public class Emitter {
         return this;
     }
 
-    public Emitter handlePublish(String event, Object object) {
-
+    public Emitter handlePublish(String event, JsonNode object) {
         Listener listener = publishcallbacks.get(event);
 
         if (listener != null) {

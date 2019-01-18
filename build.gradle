@@ -81,5 +81,8 @@ bintray{
 
 dependencies {
     compile 'com.neovisionaries:nv-websocket-client:1.30'
-    compile group: 'org.json', name: 'json', version: '20090211'
+    compile 'org.msgpack:jackson-dataformat-msgpack:0.8.15'
+//    compile group: 'org.json', name: 'json', version: '20090211'
+//    compile group: 'com.fasterxml.jackson.core', name: 'jackson-core', version: '2.9.8'
+//    compile group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version: '2.9.8'
 }

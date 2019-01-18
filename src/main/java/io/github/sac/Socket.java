@@ -1,28 +1,19 @@
 package io.github.sac;
 
-import com.neovisionaries.ws.client.OpeningHandshakeException;
-import com.neovisionaries.ws.client.StatusLine;
-import com.neovisionaries.ws.client.WebSocket;
-import com.neovisionaries.ws.client.WebSocketAdapter;
-import com.neovisionaries.ws.client.WebSocketException;
-import com.neovisionaries.ws.client.WebSocketFactory;
-import com.neovisionaries.ws.client.WebSocketFrame;
-import com.neovisionaries.ws.client.WebSocketState;
+import com.fasterxml.jackson.core.JsonParseException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.TextNode;
+import com.neovisionaries.ws.client.*;
+import io.github.sac.codec.SocketClusterCodec;
+
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Timer;
-import java.util.TimerTask;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-
-import io.github.sac.codec.SocketClusterCodec;
-import org.json.JSONException;
-import org.json.JSONObject;
 
 /**
  * Created by sachin on 13/11/16.
@@ -44,6 +35,7 @@ public class Socket extends Emitter {
     private WebSocketAdapter adapter;
     private Map<String, String> headers;
     private SocketClusterCodec codec;
+    private static final ObjectMapper mapper = new ObjectMapper();
 
     public Socket(String URL) {
         this.URL = URL;
@@ -51,7 +43,7 @@ public class Socket extends Emitter {
         counter = new AtomicInteger(1);
         acks = new HashMap<>();
         channels = new ConcurrentHashMap<>();
-        adapter = getAdapter();
+        adapter = getAdapter(this);
         headers = new HashMap<>();
         putDefaultHeaders();
     }
@@ -61,7 +53,11 @@ public class Socket extends Emitter {
         return this;
     }
 
-    private void sendData(WebSocket websocket, Object data) {
+    private void sendData(WebSocket websocket, String data) {
+        sendData(websocket, new TextNode(data));
+    }
+
+    private void sendData(WebSocket websocket, JsonNode data) {
         if (this.codec == null) {
             websocket.sendText(data.toString());
         } else {
@@ -77,7 +73,7 @@ public class Socket extends Emitter {
     }
 
     public Channel createChannel(String name) {
-        if(channels.containsKey(name)){
+        if (channels.containsKey(name)) {
             return channels.get(name);
         }
 
@@ -107,9 +103,10 @@ public class Socket extends Emitter {
         this.listener = listener;
     }
 
-    public Logger getLogger(){
+    public Logger getLogger() {
         return logger;
     }
+
     /**
      * used to set up TLS/SSL connection to server for more details visit neovisionaries websocket client
      */
@@ -137,13 +134,16 @@ public class Socket extends Emitter {
                     strategy.setAttemptsMade(0);
                 }
 
-                JSONObject handshakeObject = new JSONObject();
+                ObjectNode handshakeObject = mapper.createObjectNode();
                 handshakeObject.put("event", "#handshake");
-                JSONObject object = new JSONObject();
+
+                ObjectNode object = mapper.createObjectNode();
                 object.put("authToken", AuthToken);
-                handshakeObject.put("data", object);
+
+                handshakeObject.set("data", object);
                 handshakeObject.put("cid", counter.getAndIncrement());
-                socket.sendData(websocket, handshakeObject.toString());
+
+                socket.sendData(websocket, handshakeObject);
 
                 listener.onConnected(Socket.this, headers);
 
@@ -164,51 +164,76 @@ public class Socket extends Emitter {
                 super.onConnectError(websocket, exception);
             }
 
+            private Integer getInt(JsonNode node, String fieldName) {
+                if (node.has(fieldName)) {
+                    JsonNode value = node.get(fieldName);
+                    if (!value.isNull() && value.isInt()) {
+                        return value.asInt();
+                    }
+                }
+                return null;
+            }
+
+            private String getStr(JsonNode node, String fieldName) {
+                if (node.has(fieldName)) {
+                    JsonNode value = node.get(fieldName);
+                    if (!value.isNull() && value.isTextual()) {
+                        return value.asText();
+                    }
+                }
+                return null;
+            }
+
+            private Boolean getBool(JsonNode node, String fieldName) {
+                if (node.has(fieldName)) {
+                    JsonNode value = node.get(fieldName);
+                    if (!value.isNull() && value.isBoolean()) {
+                        return value.asBoolean();
+                    }
+                }
+                return null;
+            }
+
 
             @Override
             public void onFrame(WebSocket websocket, WebSocketFrame frame) throws Exception {
+                JsonNode object;
+                if (codec == null) {
+                    object = getTextPayload(frame.getPayloadText());
+                } else {
+                    object = codec.decode(frame.getPayload());
+                }
 
-                if (frame.getPayloadText().equalsIgnoreCase("#1")) {
+                if (object.isTextual() && object.asText().equalsIgnoreCase("#1")) {
                     /**
                      *  PING-PONG logic goes here
                      */
                     socket.sendData(websocket, "#2");
                 } else {
-                    if (Socket.this.codec == null) {
-                        payload = this.getTextPayload(frame.getPayloadText());
-                    } else {
-                        payload = Socket.this.codec.decode(frame.getPayload());
-                    }
-                    JSONObject object = new JSONObject(
-                            socket.codec == null ? frame.getPayloadText() : socket.codec.decode(frame.getPayload())
-                    );
-
                     /**
                      * Message retrieval mechanism goes here
                      */
+
                     logger.info("Message :" + object.toString());
-
-
                     try {
-                        Object dataobject = object.opt("data");
-                        Integer rid = (Integer) object.opt("rid");
-                        Integer cid = (Integer) object.opt("cid");
-                        String event = (String) object.opt("event");
+                        JsonNode dataobject = object.get("data");
+                        Integer rid = getInt(object, "rid");
+                        Integer cid = getInt(object, "cid");
+                        String event = getStr(object, "event");
 
                         switch (Parser.parse(dataobject, event)) {
-
                             case ISAUTHENTICATED:
-                                listener.onAuthentication(Socket.this, ((JSONObject) dataobject).getBoolean("isAuthenticated"));
+                                listener.onAuthentication(Socket.this, getBool(dataobject, "isAuthenticated"));
                                 subscribeChannels();
                                 break;
                             case PUBLISH:
-                                Socket.this.handlePublish(((JSONObject) dataobject).getString("channel"), ((JSONObject) dataobject).opt("data"));
+                                Socket.this.handlePublish(getStr(dataobject, "channel"), dataobject.get("data"));
                                 break;
                             case REMOVETOKEN:
                                 setAuthToken(null);
                                 break;
                             case SETTOKEN:
-                                String token = ((JSONObject) dataobject).getString("token");
+                                String token = getStr(dataobject, "token");
                                 setAuthToken(token);
                                 listener.onSetAuthToken(token, Socket.this);
                                 break;
@@ -226,7 +251,7 @@ public class Socket extends Emitter {
                                     if (objects != null) {
                                         Ack fn = (Ack) objects[1];
                                         if (fn != null) {
-                                            fn.call((String) objects[0], object.opt("error"), object.opt("data"));
+                                            fn.call((String) objects[0], object.get("error"), object.get("data"));
                                         } else {
                                             logger.warning("ack function is null with rid " + rid);
                                         }
@@ -239,7 +264,15 @@ public class Socket extends Emitter {
                     }
 
                 }
-                super.onFrame(websocket, frame);
+
+            }
+
+            private JsonNode getTextPayload(String payloadText) throws IOException {
+                try {
+                    return mapper.readTree(payloadText);
+                } catch (JsonParseException e) {
+                    return mapper.valueToTree(payloadText);
+                }
             }
 
 
@@ -259,17 +292,21 @@ public class Socket extends Emitter {
 
     }
 
+    private void putData(ObjectNode node, String key, Object object) {
+        if (object instanceof JsonNode) {
+            node.set(key, (JsonNode) object);
+        } else {
+            node.putPOJO(key, (JsonNode) object);
+        }
+    }
+
     public Socket emit(final String event, final Object object) {
         EventThread.exec(new Runnable() {
             public void run() {
-                JSONObject eventObject = new JSONObject();
-                try {
-                    eventObject.put("event", event);
-                    eventObject.put("data", object);
-                } catch (JSONException e) {
-                    e.printStackTrace();
-                }
-                sendData(ws, eventObject.toString());
+                ObjectNode eventObject = mapper.createObjectNode();
+                eventObject.put("event", event);
+                putData(eventObject, "data", object);
+                sendData(ws, eventObject);
             }
         });
         return this;
@@ -280,16 +317,12 @@ public class Socket extends Emitter {
 
         EventThread.exec(new Runnable() {
             public void run() {
-                JSONObject eventObject = new JSONObject();
+                ObjectNode eventObject = mapper.createObjectNode();
                 acks.put(counter.longValue(), getAckObject(event, ack));
-                try {
-                    eventObject.put("event", event);
-                    eventObject.put("data", object);
-                    eventObject.put("cid", counter.getAndIncrement());
-                } catch (JSONException e) {
-                    e.printStackTrace();
-                }
-                sendData(ws, eventObject.toString());
+                eventObject.put("event", event);
+                putData(eventObject, "data", object);
+                eventObject.put("cid", counter.getAndIncrement());
+                sendData(ws, eventObject);
             }
         });
         return this;
@@ -298,18 +331,13 @@ public class Socket extends Emitter {
     private Socket subscribe(final String channel) {
         EventThread.exec(new Runnable() {
             public void run() {
-                JSONObject subscribeObject = new JSONObject();
-                try {
-                    subscribeObject.put("event", "#subscribe");
-                    JSONObject object = new JSONObject();
-                    object.put("channel", channel);
-                    subscribeObject.put("data", object);
-
-                    subscribeObject.put("cid", counter.getAndIncrement());
-                } catch (JSONException e) {
-                    e.printStackTrace();
-                }
-                sendData(ws, subscribeObject.toString());
+                ObjectNode subscribeObject = mapper.createObjectNode();
+                subscribeObject.put("event", "#subscribe");
+                ObjectNode object = mapper.createObjectNode();
+                object.put("channel", channel);
+                subscribeObject.set("data", object);
+                subscribeObject.put("cid", counter.getAndIncrement());
+                sendData(ws, subscribeObject);
             }
         });
         return this;
@@ -323,18 +351,14 @@ public class Socket extends Emitter {
     private Socket subscribe(final String channel, final Ack ack) {
         EventThread.exec(new Runnable() {
             public void run() {
-                JSONObject subscribeObject = new JSONObject();
-                try {
-                    subscribeObject.put("event", "#subscribe");
-                    JSONObject object = new JSONObject();
-                    acks.put(counter.longValue(), getAckObject(channel, ack));
-                    object.put("channel", channel);
-                    subscribeObject.put("data", object);
-                    subscribeObject.put("cid", counter.getAndIncrement());
-                } catch (JSONException e) {
-                    e.printStackTrace();
-                }
-                sendData(ws, subscribeObject.toString());
+                ObjectNode subscribeObject = mapper.createObjectNode();
+                subscribeObject.put("event", "#subscribe");
+                ObjectNode object = mapper.createObjectNode();
+                acks.put(counter.longValue(), getAckObject(channel, ack));
+                object.put("channel", channel);
+                putData(subscribeObject, "data", object);
+                subscribeObject.put("cid", counter.getAndIncrement());
+                sendData(ws, subscribeObject);
             }
         });
         return this;
@@ -343,15 +367,11 @@ public class Socket extends Emitter {
     private Socket unsubscribe(final String channel) {
         EventThread.exec(new Runnable() {
             public void run() {
-                JSONObject subscribeObject = new JSONObject();
-                try {
-                    subscribeObject.put("event", "#unsubscribe");
-                    subscribeObject.put("data", channel);
-                    subscribeObject.put("cid", counter.getAndIncrement());
-                } catch (JSONException e) {
-                    e.printStackTrace();
-                }
-                sendData(ws, subscribeObject.toString());
+                ObjectNode subscribeObject = mapper.createObjectNode();
+                subscribeObject.put("event", "#unsubscribe");
+                subscribeObject.put("data", channel);
+                subscribeObject.put("cid", counter.getAndIncrement());
+                sendData(ws, subscribeObject);
             }
         });
         return this;
@@ -360,17 +380,13 @@ public class Socket extends Emitter {
     private Socket unsubscribe(final String channel, final Ack ack) {
         EventThread.exec(new Runnable() {
             public void run() {
-                JSONObject subscribeObject = new JSONObject();
-                try {
-                    subscribeObject.put("event", "#unsubscribe");
-                    subscribeObject.put("data", channel);
+                ObjectNode subscribeObject = mapper.createObjectNode();
+                subscribeObject.put("event", "#unsubscribe");
+                subscribeObject.put("data", channel);
 
-                    acks.put(counter.longValue(), getAckObject(channel, ack));
-                    subscribeObject.put("cid", counter.getAndIncrement());
-                } catch (JSONException e) {
-                    e.printStackTrace();
-                }
-                sendData(ws, subscribeObject.toString());
+                acks.put(counter.longValue(), getAckObject(channel, ack));
+                subscribeObject.put("cid", counter.getAndIncrement());
+                sendData(ws, subscribeObject);
             }
         });
         return this;
@@ -379,18 +395,18 @@ public class Socket extends Emitter {
     public Socket publish(final String channel, final Object data) {
         EventThread.exec(new Runnable() {
             public void run() {
-                JSONObject publishObject = new JSONObject();
-                try {
-                    publishObject.put("event", "#publish");
-                    JSONObject object = new JSONObject();
-                    object.put("channel", channel);
-                    object.put("data", data);
-                    publishObject.put("data", object);
-                    publishObject.put("cid", counter.getAndIncrement());
-                } catch (JSONException e) {
-                    e.printStackTrace();
+                ObjectNode publishObject = mapper.createObjectNode();
+                publishObject.put("event", "#publish");
+                ObjectNode object = mapper.createObjectNode();
+                object.put("channel", channel);
+                if (data instanceof JsonNode) {
+                    object.set("data", (JsonNode) data);
+                } else {
+                    object.putPOJO("data", data);
                 }
-                sendData(ws, publishObject.toString());
+                publishObject.put("data", object);
+                publishObject.put("cid", counter.getAndIncrement());
+                sendData(ws, publishObject);
             }
         });
 
@@ -400,19 +416,15 @@ public class Socket extends Emitter {
     public Socket publish(final String channel, final Object data, final Ack ack) {
         EventThread.exec(new Runnable() {
             public void run() {
-                JSONObject publishObject = new JSONObject();
-                try {
-                    publishObject.put("event", "#publish");
-                    JSONObject object = new JSONObject();
-                    acks.put(counter.longValue(), getAckObject(channel, ack));
-                    object.put("channel", channel);
-                    object.put("data", data);
-                    publishObject.put("data", object);
-                    publishObject.put("cid", counter.getAndIncrement());
-                } catch (JSONException e) {
-                    e.printStackTrace();
-                }
-                sendData(ws, publishObject.toString());
+                ObjectNode publishObject = mapper.createObjectNode();
+                publishObject.put("event", "#publish");
+                ObjectNode object = mapper.createObjectNode();
+                acks.put(counter.longValue(), getAckObject(channel, ack));
+                object.put("channel", channel);
+                putData(object, "data", data);
+                publishObject.put("data", object);
+                publishObject.put("cid", counter.getAndIncrement());
+                sendData(ws, publishObject);
             }
         });
 
@@ -424,15 +436,11 @@ public class Socket extends Emitter {
             public void call(final String channel, final Object error, final Object data) {
                 EventThread.exec(new Runnable() {
                     public void run() {
-                        JSONObject object = new JSONObject();
-                        try {
-                            object.put("error", error);
-                            object.put("data", data);
-                            object.put("rid", cid);
-                        } catch (JSONException e) {
-                            e.printStackTrace();
-                        }
-                        sendData(ws, object.toString());
+                        ObjectNode object = mapper.createObjectNode();
+                        putData(object, "error", error);
+                        putData(object, "data", data);
+                        object.put("rid", cid);
+                        sendData(ws, object);
                     }
                 });
             }
@@ -441,7 +449,7 @@ public class Socket extends Emitter {
 
 
     private void subscribeChannels() {
-        for(Map.Entry<String, Channel> entry : channels.entrySet()) {
+        for (Map.Entry<String, Channel> entry : channels.entrySet()) {
             entry.getValue().subscribe();
         }
     }
